@@ -52,8 +52,8 @@ prev_pcds = {}
 
 # plots will be added to these lists after alignment. If alignment was successful, they will be added to checked.
 # If alignment was unsuccessful, they will be added to broken. If there were no plots to align them to, they will be added to hanging.
-broken_plots = []
-checked_plots = []
+broken_plots = ['1900']
+checked_plots = ['1901']
 hanging_plots = []
 
 #Parameters for icp
@@ -143,31 +143,29 @@ def sort_ref(ref):
     ref_final[3] = ref[dist_zero.index(max(dist_zero))]
     index_list.remove(dist_zero.index(min(dist_zero)))
     index_list.remove(dist_zero.index(max(dist_zero)))
-    v1 = ref_final[3][:2] / np.linalg.norm(ref_final[3][:2])
-    v2 = [np.sqrt(1 / 2), np.sqrt(1 / 2)]
-    dot = np.dot(v1, v2)
-    det = v1[0] * v2[1] - v1[1] * v2[0]
-    angle = np.arctan2(det, dot)
-    cos_a = np.cos(angle)
-    sin_a = np.sin(angle)
-    R = np.array([[cos_a, -sin_a],
-                  [sin_a, cos_a]])
-    temp = [R @ ref[index_list[0]][:2], R @ ref[index_list[1]][:2]]
-    if temp[0][0] > temp[1][0]:
-        ref_final[1] = ref[index_list[0]]
-        ref_final[2] = ref[index_list[1]]
-    else:
-        ref_final[1] = ref[index_list[0]]
-        ref_final[2] = ref[index_list[1]]
-
+    if ref_final[3][1] > 0:
+        if ref[index_list[0]][0] < ref[index_list[1]][0]:
+            ref_final[1] = ref[index_list[0]]
+            ref_final[2] = ref[index_list[1]]
+        elif ref[index_list[0]][0] > ref[index_list[1]][0]:
+            ref_final[1] = ref[index_list[1]]
+            ref_final[2] = ref[index_list[0]]
+    elif ref_final[3][1] < 0:
+        if ref[index_list[0]][0] < ref[index_list[1]][0]:
+            ref_final[1] = ref[index_list[1]]
+            ref_final[2] = ref[index_list[0]]
+        elif ref[index_list[0]][0] > ref[index_list[1]][0]:
+            ref_final[1] = ref[index_list[0]]
+            ref_final[2] = ref[index_list[1]]
     return ref_final
 
 
-def get_ref(path):
-    ref = np.loadtxt(path, skiprows=1)[:, :3]
+def get_ref(plot, path):
+    ref = np.loadtxt(path, skiprows=1)[:, :3][:-1]
     if len(ref) == 4:
         return sort_ref(list(ref))
     elif len(ref) < 4:  # Open the trajectory, get bounds, and return the bounds.
+        print(f'{plot} is missing a reference point')
         path = path[:-7] + '_time.ply'
         traj = o3d.io.read_point_cloud(path)
         b_box = traj.get_minimal_oriented_bounding_box()
@@ -182,9 +180,10 @@ def get_ref(path):
         ])
         ref = np.dot(ref, R)
         ref += C
-        return ref
+        return sort_ref(ref)
 
     elif len(ref) > 4:
+        print(f'{plot} has an extra reference point')
         best_combo = np.empty(4)
         best_score = 10000
         for combo in combinations(ref, 4):
@@ -199,23 +198,23 @@ def get_ref(path):
                 np.linalg.norm(dists[4] - (20 * np.sqrt(2)))) + float(np.linalg.norm(dists[5] - 20 * (20 * np.sqrt(2))))
             if score < best_score:
                 best_combo, best_score = sort_ref(list(combo)), score
-        return best_combo
+        return sort_ref(best_combo)
 
 # This code shortens the point clouds. I have had some issues with this, in some files it removes nearly every point.
 # I believe the issue is with the outlier removal part. The print statements are temporary, for troubleshooting.
 def shorten(points, resolution, height):
     # Create a grid (e.g., 1m resolution)
-    print(len(points))
+
     xy_indices = np.floor(points[:, :2] / resolution).astype(int)
-    print(len(xy_indices))
+
     # Step 2: Estimate local ground using pandas groupby
     df = pd.DataFrame({'gx': xy_indices[:, 0], 'gy': xy_indices[:, 1], 'z': points[:, 2]})
     df = df.groupby(['gx', 'gy']).agg(['min', 'count'])['z'].reset_index()
-    print(len(df))
+
     # Step 3: Apply density threshold
     threshold = (float(len(points)) / (625 / (resolution * resolution))) / 40
     df = df[df['count'] > threshold]
-    print(len(df))
+
     # Build fast lookup for ground z values
     ground_dict = {(row['gx'], row['gy']): row['min'] for _, row in df.iterrows()}
     del df
@@ -227,32 +226,33 @@ def shorten(points, resolution, height):
         (-2, -1), (-1, -1), (0, -1), (1, -1), (2, -1),
         (-2, -2), (-1, -2), (0, -2), (1, -2), (2, -2)
     ]
-    print(len(ground_dict))
+
     # Removes outliers
     updated_dict = {}
     med = float(np.median(list(ground_dict.values()))) + 2.0
     for key in ground_dict:
+        if ground_dict[key] > med:
+            continue
+
         adj_vals = []
         for point in surrounding_points:
             if (key[0] + point[0], key[1] + point[1]) in ground_dict:
                 adj_vals.append(ground_dict[key[0] + point[0], key[1] + point[1]])
-        adj_med = np.median(adj_vals)
-        if ground_dict[key] > med:
-            continue
-        if not adj_vals:
-            updated_dict[key] = ground_dict[key]
-        elif adj_med + resolution * 0.5 > ground_dict[key] > adj_med - resolution * 0.5:
-            updated_dict[key] = ground_dict[key]
-        else:
-            updated_dict[key] = adj_med
-    print(len(updated_dict))
+        if len(adj_vals) > 0:
+            adj_med = np.median(adj_vals)
+            if adj_med + resolution * 0.5 > ground_dict[key] > adj_med - resolution * 0.5:
+                updated_dict[key] = ground_dict[key]
+            else:
+                updated_dict[key] = adj_med
+
+
     # Step 4: Lookup ground height for each point
     ground_z = np.array([updated_dict.get(tuple(k), np.nan) for k in xy_indices])
     del xy_indices
-    print(len(ground_z))
+
     # Step 5: Keep points within height of ground
     keep_mask = ~np.isnan(ground_z) & (points[:, 2] - ground_z < height)
-    print(len(points[keep_mask]))
+
     # Return filtered points
     return points[keep_mask]
 
@@ -286,63 +286,82 @@ def compute_transformation(source, target):
 
 def create_aligned_pcd(plot):
     # Getting pcd and ref paths. The conditionals are because the naming conventions on some files in the ForestLandscapes folder vary.
-    folder = get_file_path(plot)
-    if os.path.isfile(os.path.join(path, folder, 'results_trajref.txt')):
-        ref_path = os.path.join(path, folder, 'results_trajref.txt')
-    elif os.path.isfile(os.path.join(path, folder, f'{plot}_trajref.txt')):
-        ref_path = os.path.join(path, folder, f'{plot}_trajref.txt')
-    else:
-        ref_path = ''
-        print(f'{plot} REF FILE NOT FOUND')
-    if os.path.isfile(os.path.join(path, folder, 'results.laz')):
-        pcd_path = os.path.join(path, folder, 'results.laz')
-    elif os.path.isfile(os.path.join(path, folder, f'{plot}.laz')):
-        pcd_path = os.path.join(path, folder, f'{plot}.laz')
-    else:
-        pcd_path = ''
-        print(f'{plot} PCD FILE NOT FOUND')
+    try:
+        folder = get_file_path(plot)
+        if os.path.isfile(os.path.join(path, folder, 'results_trajref.txt')):
+            ref_path = os.path.join(path, folder, 'results_trajref.txt')
+        else:
+            ref_path = ''
+            print(f'{plot} REF FILE NOT FOUND')
+        if os.path.isfile(os.path.join(path, folder, 'results.laz')):
+            pcd_path = os.path.join(path, folder, 'results.laz')
+        else:
+            pcd_path = ''
+            print(f'{plot} PCD FILE NOT FOUND')
+        if os.path.isfile(os.path.join(path, folder, 'results_traj_time.ply')):
+            traj_path = os.path.join(path, folder, 'results_traj_time.ply')
+        else:
+            traj_path = ''
+            print(f'{plot} TRAJ FILE NOT FOUND')
 
-    # Checking if file has been pre-processed
-    if os.path.exists(os.path.join(temp_path, f'{plot}TEMP.ply')):
-        ref = get_ref(ref_path)
-        _, _, transformation = compute_transformation(ref, target_positions[plot])
-        plot_transformations[plot] = transformation
-        return {plot: True}
+        # Checking if file has been pre-processed
+        if os.path.exists(os.path.join(temp_path, f'{plot}TEMP.ply')):
+            ref = get_ref(plot, ref_path)
+            _, _, transformation = compute_transformation(ref, target_positions[plot])
+            plot_transformations[plot] = transformation
+            return {plot: True}
 
-    # Checking if pcd and ref exist
-    if os.path.isfile(pcd_path) and os.path.isfile(ref_path):
-        # Loading ref, making sure it is in the proper order
-        ref = get_ref(ref_path)
+        # Checking if pcd and ref exist
+        if os.path.isfile(pcd_path) and os.path.isfile(ref_path) and os.path.isfile(traj_path):
+            # Loading ref, making sure it is in the proper order
+            ref = get_ref(plot, ref_path)
 
-        # Computing and storing transformation
-        t, R, transformation = compute_transformation(ref, target_positions[plot])
-        plot_transformations[plot] = transformation
+            # Computing and storing transformation
+            t, R, transformation = compute_transformation(ref, target_positions[plot])
+            plot_transformations[plot] = transformation
 
-        # Loading points, applying transformation
-        points = mem_eff_loading(pcd_path)
-        points = np.dot(points, R.T)
-        points += t
+            # Loading points, applying transformation
+            points = mem_eff_loading(pcd_path)
+            points = np.dot(points, R.T)
+            points += t
 
-        # Calculating bounding box and cropping point cloud
-        box_min = [target_positions[plot][0][0] - 2.5, target_positions[plot][0][1] - 2.5, min_elev]
-        box_max = [target_positions[plot][3][0] + 2.5, target_positions[plot][3][1] + 2.5, max_elev]
-        mask = np.all((points >= box_min) & (points <= box_max), axis=1)
-        points = points[mask]
+            # Loading traj, Calculating bounding box and cropping point cloud
+            traj = o3d.io.read_point_cloud(traj_path)
+            traj.transform(transformation)
+            box_min = traj.get_min_bound()
+            box_max = traj.get_max_bound()
+            if 17.5 > box_max[0] - box_min[0] > 25 or 17.5 > box_max[1] - box_min[1] > 25: # Checks dimensions of bounding box
+                print(f'{plot} trajectory is broken')
+                box_min = [target_positions[plot][0][0] - 2.5, target_positions[plot][0][1] - 2.5, min_elev]
+                box_max = [target_positions[plot][3][0] + 2.5, target_positions[plot][3][1] + 2.5, max_elev]
+            else:
+                box_min[0] -= 2.5
+                box_min[1] -= 2.5
+                box_max[0] += 2.5
+                box_max[1] += 2.5
+            mask = np.all((points >= box_min) & (points <= box_max), axis=1)
+            points = points[mask]
 
-        # Shortening point cloud
-        points = shorten(points, 0.5, 2)
+            # Shortening point cloud
+            points = shorten(points, 0.5, 2)
 
-        # Store as pcd
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-        o3d.io.write_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'), pcd)
+            # Store as pcd
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points)
+            o3d.io.write_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'), pcd)
 
-        print(plot, 'done')
+            print(plot, 'done')
 
-        return {plot: True}
-    else:
-        print(f'{plot} not found')
+            return {plot: True}
+        else:
+            print(f'{plot} not found')
+            return {plot: False}
+    except Exception as e:
+        print(f"An error occurred loading {plot}")
+        print(f'Error type: {type(e).__name__}')
+        print(f'Error message: {e}')
         return {plot: False}
+
 
 # Checks which of the neighboring plots have been checked and can be aligned to.
 def check_alignment(column, vert_plot, hori_plot):
@@ -366,10 +385,8 @@ def calculate_overlap(reference, target):
     bbr = reference.get_axis_aligned_bounding_box()
     bbt = target.get_axis_aligned_bounding_box()
 
-    bbox_min = [np.maximum(bbr.min_bound[0], bbt.min_bound[0]), np.maximum(bbr.min_bound[1], bbt.min_bound[1]),
-                np.maximum(bbr.min_bound[2], bbt.min_bound[2])]
-    bbox_max = [np.minimum(bbr.max_bound[0], bbt.max_bound[0]), np.minimum(bbr.max_bound[1], bbt.max_bound[1]),
-                np.minimum(bbr.max_bound[2], bbt.max_bound[2])]
+    bbox_min = [np.maximum(bbr.min_bound[0], bbt.min_bound[0]), np.maximum(bbr.min_bound[1], bbt.min_bound[1]), min_elev]
+    bbox_max = [np.minimum(bbr.max_bound[0], bbt.max_bound[0]), np.minimum(bbr.max_bound[1], bbt.max_bound[1]), max_elev]
 
     crop_box = o3d.geometry.AxisAlignedBoundingBox(bbox_min, bbox_max)
 
@@ -385,26 +402,12 @@ def new_calculate_overlap(plot, vert_plot, hori_plot, transformation, typ):
         reference = o3d.geometry.PointCloud()
         target = o3d.geometry.PointCloud()
 
-        bbr = pcds[plot].get_axis_aligned_bounding_box()
-        bbt1 = pcds[vert_plot].get_axis_aligned_bounding_box()
-        bbt2 = prev_pcds[hori_plot].get_axis_aligned_bounding_box()
-
-        bb1_min = [np.maximum(bbr.min_bound[0], bbt1.min_bound[0]), np.maximum(bbr.min_bound[1], bbt1.min_bound[1]),
-                np.maximum(bbr.min_bound[2], bbt1.min_bound[2])]
-        bb1_max = [np.minimum(bbr.max_bound[0], bbt1.max_bound[0]), np.minimum(bbr.max_bound[1], bbt1.max_bound[1]),
-                    np.minimum(bbr.max_bound[2], bbt1.max_bound[2])]
-        crop_box_1 = o3d.geometry.AxisAlignedBoundingBox(bb1_min, bb1_max)
-
-        bb2_min = [np.maximum(bbr.min_bound[0], bbt2.min_bound[0]), np.maximum(bbr.min_bound[1], bbt2.min_bound[1]),
-                    np.maximum(bbr.min_bound[2], bbt2.min_bound[2])]
-        bb2_max = [np.minimum(bbr.max_bound[0], bbt2.max_bound[0]), np.minimum(bbr.max_bound[1], bbt2.max_bound[1]),
-                    np.minimum(bbr.max_bound[2], bbt2.max_bound[2])]
-        crop_box_2 = o3d.geometry.AxisAlignedBoundingBox(bb2_min, bb2_max)
-
-        reference += temp.crop(crop_box_1)
-        reference += temp.crop(crop_box_2)
-        target += pcds[vert_plot].crop(crop_box_1)
-        target += prev_pcds[hori_plot].crop(crop_box_2)
+        ref_temp, tar_temp = calculate_overlap(temp, pcds[plot])
+        reference += ref_temp
+        target += tar_temp
+        ref_temp, tar_temp = calculate_overlap(temp, prev_pcds[vert_plot])
+        reference += ref_temp
+        target += tar_temp
 
         return (reference, target)
 
