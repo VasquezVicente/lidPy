@@ -10,9 +10,6 @@ import time
 import os
 import json
 
-#Notes: Denoise using ray cloud tools https://github.com/csiro-robotics/raycloudtools, take a small vertical slice, process more compact segments (not columns)
-#use ALS or drone data to align plots, deleaf/denoise pointclouds
-
 #Link to Vicente's folder: https://drive.google.com/drive/folders/1vqcBVej_-oHQ5_PJoLsepj3iTGa3lDMa
 
 columns = {}
@@ -94,7 +91,7 @@ def mem_eff_loading(file_path):  #again what doest this function does?
     return points
 
 def sort_ref(ref):
-    dist_zero = [np.linalg.norm(ref[0]), np.linalg.norm(ref[1]), np.linalg.norm(ref[2]), np.linalg.norm(ref[3])] #what? 
+    dist_zero = [np.linalg.norm(ref[0]), np.linalg.norm(ref[1]), np.linalg.norm(ref[2]), np.linalg.norm(ref[3])]
 
 def get_ref(ref, path):
     if len(ref) == 4:  ## so ref is already a loaded txt, bad
