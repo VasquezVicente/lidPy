@@ -8,6 +8,7 @@ import laspy
 import copy
 import time
 import os
+import json
 
 #Notes: Denoise using ray cloud tools https://github.com/csiro-robotics/raycloudtools, take a small vertical slice, process more compact segments (not columns)
 #use ALS or drone data to align plots, deleaf/denoise pointclouds
@@ -20,24 +21,32 @@ pcds = {}
 adj_pcds = {}
 
 save_path = os.path.join(r'D:\MLS_alignment\temporary')
-if not os.path.exists(save_path):
-    os.makedirs(save_path)
-elev_raw = np.loadtxt(r"C:\Users\Wright-MullerI\Downloads\elev.TXT", skiprows=1)
+os.makedirs(save_path, exist_ok=True)
+
+elev_raw = np.loadtxt(r"\\stri-sm01\ForestLandscapes\UAVSHARE\BCNM Lidar Raw Data\aux_files\elev.TXT", skiprows=1) #change the path to the server location
 elev = {}
-min_elev = 1000
+min_elev = 1000   ##1000 asl? 
 max_elev = 1
 for plot in elev_raw:
-    elev[str(int(plot[0])) + str(int(plot[1]))] = plot[2]
+    elev[str(int(plot[0])) + str(int(plot[1]))] = plot[2]   # this is trying to create a a dict with the q20 and their elevations but i think it has a an error 
     if min_elev > plot[2]:
         min_elev = plot[2]
     if max_elev < plot[2] + 10:
         max_elev = plot[2] + 10
 
-target_positions = {}
-def calc_plot_target(plot):
+def calc_plot_target(plot, elev):
+    """
+    Computes the 4 corner coordinates (x, y, z) of a plot using the elevation dict.
+    Args:
+        plot (str): Plot name, e.g. "0500"
+        elev (dict): Elevation dictionary with keys like '100020' and values as z.
+
+    Returns:
+        np.ndarray: 4x3 array of target positions.
+    """
     col = int(plot[:2])
     row = int(plot[2:])
-    target_positions[plot] = np.array([
+    return np.array([
         [col * 20, row * 20, elev[str(col*20) + str(row*20)]],
         [col * 20, (row + 1) * 20, elev[str(col*20) + str((row+1)*20)]],
         [(col + 1) * 20, row * 20, elev[str((col+1)*20) + str(row*20)]],
@@ -45,29 +54,30 @@ def calc_plot_target(plot):
     ])
 
 column_target_positions = {}
-def calc_col_target(column):
+
+def calc_col_target(column):   # more annotations about what stuff do, i am guessing this determines the column/strip 
     row = 20
     col = int(column)
     column_target_positions[column] = np.array([
-        [col * 20, row * 20, elev[str(col*20) + str(row*20)]],
-        [col * 20, (row + 5) * 20, elev[str(col*20) + str((row+5)*20)]],
-        [(col + 1) * 20, row * 20, elev[str((col+1)*20) + str(row*20)]],
-        [(col + 1) * 20, (row + 5) * 20, elev[str((col+1)*20) + str((row+5)*20)]]
+        [col * 20, row * 20, elev[str(col*20) + str(row*20)]],   ## so this is the bottom left corned 
+        [col * 20, (row + 5) * 20, elev[str(col*20) + str((row+5)*20)]],   ## this is the top left corner assuming from the +5
+        [(col + 1) * 20, row * 20, elev[str((col+1)*20) + str(row*20)]],  ## this looks like the the bottom left corner maybe?
+        [(col + 1) * 20, (row + 5) * 20, elev[str((col+1)*20) + str((row+5)*20)]]  ## aah top right 
     ])
 
 
-def get_file_path(plot_num):
-    check = False
-    for filename in os.listdir(path):
+def get_file_path(plot_num, path=r'\\stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_data_processed'): ##adding a default
+    check = False  ## a check inside of a fucntion? without a parameter? 
+    for filename in os.listdir(path):    #okay now listing a path variable which is also not a parameter
         if filename.startswith(plot_num) and not filename.endswith('alt'):
             folder = filename
             check = True
     if not check:
         print(plot_num, 'FILE NOT FOUND')
-    return folder
+    return folder   ###this function need a test
 
 
-def lazO3d(file_path): #Reads laz files
+def lazO3d(file_path): #Reads laz files  ## the header is missing from this function, its a flaw that will need changing eventually 
     cloud = laspy.read(file_path)
     points = np.vstack((cloud.x, cloud.y, cloud.z)).T
     pcd = o3d.geometry.PointCloud()
@@ -75,25 +85,22 @@ def lazO3d(file_path): #Reads laz files
     return pcd
 
 
-def mem_eff_loading(file_path):
+def mem_eff_loading(file_path):  #again what doest this function does? 
     cloud = laspy.read(file_path)
-    points = np.empty((len(cloud.x), 3), dtype=np.float32)
+    points = np.empty((len(cloud.x), 3), dtype=np.float32)   ## seeems to be creating an empty np cloud using the dimensions of the original
     points[:, 0] = cloud.x
     points[:, 1] = cloud.y
     points[:, 2] = cloud.z
     return points
 
-
 def sort_ref(ref):
-    dist_zero = [np.linalg.norm(ref[0]), np.linalg.norm(ref[1]), np.linalg.norm(ref[2]), np.linalg.norm(ref[3])]
-
-
+    dist_zero = [np.linalg.norm(ref[0]), np.linalg.norm(ref[1]), np.linalg.norm(ref[2]), np.linalg.norm(ref[3])] #what? 
 
 def get_ref(ref, path):
-    if len(ref) == 4:
+    if len(ref) == 4:  ## so ref is already a loaded txt, bad
         return ref
     elif len(ref) < 4: # Open the trajectory, get bounds, and return the bounds.
-        traj = o3d.io.read_point_cloud(path)
+        traj = o3d.io.read_point_cloud(path)  ## but the traj is a path and not a loaded one, consistency
         b_box = traj.get_minimal_oriented_bounding_box()
         E = np.asarray(b_box.extent.copy())
         C = np.asarray(b_box.center.copy())
@@ -108,12 +115,12 @@ def get_ref(ref, path):
         ref += C
         return ref
 
-    elif len(ref) > 4:
+    elif len(ref) > 4:   ## so 5 points, we generally drop the last oen which is repeated
         best_combo = 'x'
         best_score = 10000
         for combo in combinations(ref, 4):
             dists = [
-                np.linalg.norm(combo[0] - combo[1]), np.linalg.norm(combo[0] - combo[2]),
+                np.linalg.norm(combo[0] - combo[1]), np.linalg.norm(combo[0] - combo[2]),   ###what?
                 np.linalg.norm(combo[0] - combo[3]), np.linalg.norm(combo[1] - combo[2]),
                 np.linalg.norm(combo[1] - combo[3]), np.linalg.norm(combo[2] - combo[3])
             ]
@@ -136,7 +143,7 @@ def get_ref(ref, path):
                     diagonals[diagonals.index(min(diagonals))] = dist_matrix[row][col]
 
 
-def angle_between(p1, p2, p3):
+def angle_between(p1, p2, p3): #what? more annotations
     v1 = p1 - p2
     v2 = p3 - p2
     cosine_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
@@ -146,7 +153,7 @@ def is_square_rotated(quad, target_side=20, tol=2.0, angle_tol=10.0):
     """
     Checks if a 4-point shape is a square, regardless of orientation.
     """
-    from scipy.spatial import distance_matrix
+    from scipy.spatial import distance_matrix # a module loaded inside a function
 
     dists = distance_matrix(quad, quad)
     idx = np.argsort(np.sum(dists, axis=1))  # reorder by closeness to centroid
@@ -205,15 +212,15 @@ def get_b_box(traj, min_bound, z_extent): #Step 1: Applies initial crop
     b_box = o3d.geometry.OrientedBoundingBox(center, b_box.R, extent)
     return b_box
 
-timer = [[],[],[],[],[],[],[]]
-def shorten(points, resolution, height):
+timer = [[],[],[],[],[],[],[]]  ##whattt? you can use packages to get timers
+def shorten(points, resolution, height):  #so this is a ground classification and normalization algorithm. we can work on it and is novel in python
     t1 = time.time()
     # Create a grid (e.g., 1m resolution)
-    xy_indices = np.floor(points[:, :2] / resolution).astype(int)
+    xy_indices = np.floor(points[:, :2] / resolution).astype(int) # i understand the concept of florr but we need a classfier option which should be more robust
     t2 = time.time()
 
     # Step 2: Estimate local ground using pandas groupby (fast!)
-    df = pd.DataFrame({'gx': xy_indices[:, 0], 'gy': xy_indices[:, 1], 'z': points[:, 2]})
+    df = pd.DataFrame({'gx': xy_indices[:, 0], 'gy': xy_indices[:, 1], 'z': points[:, 2]}) # clever but we need a more robust approach
     df = df.groupby(['gx', 'gy']).agg(['min', 'count'])['z'].reset_index()
     t3 = time.time()
 
@@ -227,7 +234,7 @@ def shorten(points, resolution, height):
     del df
     t5 = time.time()
 
-    surrounding_points = [
+    surrounding_points = [ #this will eventually break
         (-2, 2), (-1, 2), (0, 2), (1, 2), (2, 2),
         (-2, 1), (-1, 1), (0, 1), (1, 1), (2, 1),
         (-2, 0), (-1, 0), (1, 0), (2, 0),
@@ -303,59 +310,100 @@ def compute_transformation(source, target):
 
 
 def add_transformation(plot_num, transformation):
-    plot_transformations[plot_num] = transformation @ plot_transformations[plot_num]
+    plot_transformations[plot_num] = transformation @ plot_transformations[plot_num]  #dot product might not need to be a function
 
 
-def create_aligned_pcd(plot):
-    # Calculating plot target
-    calc_plot_target(plot)
+global_transformations = {}
+target_positions = {}
+plots = ("0500", "0501")
+path=r'\\stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_data_processed'
 
-    # Getting pcd and ref paths
+for plot in plots:
+    target_positions[plot] = calc_plot_target(plot, elev)
+
+for plot in plots:
+    # Get file paths
     folder = get_file_path(plot)
     ref_path = os.path.join(path, folder, 'results_trajref.txt')
-    pcd_path = os.path.join(path, folder, 'results.laz')
+    traj_path = os.path.join(path, folder, 'results_traj_time.ply')
+    pcd_path = os.path.join(path, folder, 'results.laz')  # not used now, but might be later
 
-    # Checking if file has been pre-processed
-    if os.path.exists(os.path.join(save_path, f'{plot}TEMP.ply')):
-        ref_unordered = np.loadtxt(ref_path, skiprows=1)[:, :3][-4:]
-        ref = np.array([ref_unordered[3], ref_unordered[0], ref_unordered[1], ref_unordered[2]])
-        _, _, transformation = compute_transformation(ref, target_positions[plot])
-        add_transformation(plot, transformation)
-        return {plot: True}
+    # Load and reorder reference points
+    ref_unordered = np.loadtxt(ref_path, skiprows=1)[:, :3][-4:]
+    ref = np.array([ref_unordered[3], ref_unordered[0], ref_unordered[1], ref_unordered[2]])
 
-    # Checking if pcd and ref exist
-    if os.path.isfile(pcd_path) and os.path.isfile(ref_path):
-        # Loading pcd and ref, making sure ref is in the proper order
-        points = mem_eff_loading(pcd_path)
-        ref_unordered = np.loadtxt(ref_path, skiprows=1)[:, :3][-4:]
-        ref = np.array([ref_unordered[3], ref_unordered[0], ref_unordered[1], ref_unordered[2]])
+    # Compute transformation
+    _, _, transformation = compute_transformation(ref, target_positions[plot])
 
-        # Computing transformation and transforming point cloud
-        t, R, transformation = compute_transformation(ref, target_positions[plot])
-        add_transformation(plot, transformation)
-        points = np.dot(points, R.T)
-        points += t
+    # Get bounding box from trajectory point cloud
+    traj = o3d.io.read_point_cloud(traj_path)
+    min_bound = traj.get_min_bound()
+    max_bound = traj.get_max_bound()
 
-        # Calculating bounding box and cropping point cloud
-        box_min = [target_positions[plot][0][0] - 2.5, target_positions[plot][0][1] - 2.5, min_elev]
-        box_max = [target_positions[plot][3][0] + 2.5, target_positions[plot][3][1] + 2.5, max_elev]
-        mask = np.all((points >= box_min) & (points <= box_max), axis=1)
-        points = points[mask]
+    # Optional buffer — remove if not needed
+    min_bound[:2] -= 5
+    max_bound[:2] += 5
+    min_bound[2] = -20  ###hard coded for now 
+    max_bound[2] = 100  #hard coded for now 
 
-        # Shortening point cloud
-        points = shorten(points, 0.5, 2)
+    # Store data in dictionary
+    global_transformations[plot] = {
+        "transformation": transformation.tolist(),
+        "min_bound": min_bound.tolist(),
+        "max_bound": max_bound.tolist()
+    }
 
-        # Store as pcd
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-        o3d.io.write_point_cloud(os.path.join(save_path, f'{plot}TEMP.ply'), pcd)
 
-        print(plot, 'done')
+with open(os.path.join(save_path, "global_transformations.json"), "w") as f:
+    json.dump(global_transformations, f, indent=2)
 
-        return {plot: True}
-    else:
-        print(f'{plot} not found')
-        return {plot: False}
+
+def lazO3d_crop_transform(file_path, json_data, plot):
+    """
+    Reads a .laz file, crops using bounding box, and applies transformation from JSON dict. Order of operations matters.
+
+    Args:
+        file_path (str): Path to the .laz file.
+        json_data (dict): Dictionary loaded from transformations.json.
+        plot (str): Plot key used to access the transformation and bounding box.
+
+    Returns:
+        open3d.geometry.PointCloud: Cropped and transformed point cloud.
+    """
+
+    # Read .laz using laspy
+    cloud = laspy.read(file_path)
+    points = np.vstack((cloud.x, cloud.y, cloud.z)).T
+
+    # Convert to Open3D point cloud
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+
+    # Get bounds and transformation from the JSON dict
+    info = json_data[plot]
+    min_bound = np.array(info["min_bound"])
+    max_bound = np.array(info["max_bound"])
+    transformation = np.array(info["transformation"])
+    # Crop and transform
+    bbox = o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+    cropped_cloud = pcd.crop(bbox)
+    cropped_cloud.transform(transformation)
+
+    return cropped_cloud
+
+
+with open(os.path.join(save_path, "global_transformations.json")) as f:
+    global_transformations = json.load(f)
+
+plot_0500= lazO3d_crop_transform(file_path = os.path.join(path, get_file_path("0500"), 'results.laz') ,  #this is a test
+                                  json_data=global_transformations,
+                                  plot="0500")
+
+plot_0501= lazO3d_crop_transform(file_path = os.path.join(path, get_file_path("0501"), 'results.laz') ,  ##this is a test
+                                  json_data=global_transformations,
+                                  plot="0501")
+
+o3d.visualization.draw_geometries([plot_0500,plot_0501])    #sanity check 
 
 
 def evaluate_registration(reference_overlap, target_overlap, threshold, init_matrix):
@@ -505,7 +553,7 @@ def compiler(column):
     return joined_pcd, joined_adj_pcd
 
 plot = '3020'
-path = r'\\Stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_data_processed'
+path = r'\\stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_data_processed'
 identity = np.eye(4)
 fitness_scores = {}
 column_fitness_scores = {}
