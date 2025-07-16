@@ -312,7 +312,7 @@ def add_transformation(plot_num, transformation):
 
 global_transformations = {}
 target_positions = {}
-plots = ("0500", "0501")
+plots = ("0500", "0501","0502", "0503", "0504","0505", "0506", "0507", "0508", "0509","0600", "0601", "0602", "0603", "0604","0605", "0606", "0607", "0608", "0609")
 path=r'\\stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_data_processed'
 
 for plot in plots:
@@ -351,7 +351,7 @@ for plot in plots:
     }
 
 
-with open(os.path.join(save_path, "global_transformations.json"), "w") as f:
+with open(os.path.join(r"//stri-sm01/ForestLandscapes/UAVSHARE/BCNM Lidar Raw Data/global_transformations.json"), "w") as f:
     json.dump(global_transformations, f, indent=2)
 
 

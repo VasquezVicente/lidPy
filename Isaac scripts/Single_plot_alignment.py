@@ -490,7 +490,7 @@ def writer(plot):
         print(f'Error message: {e}')
 
 ############################################### PRE-PROCESSING #####################################################
-
+### I insist proesecutes analysis is not heavy, time parallelization is not necessary. only slow because the time it takes to load and write temp clouds.
 t1 = time.time()
 # Parallelized pre-processing. I have found this to be significantly faster, although the code still has some issues with the shorten function
 pre_process = Parallel(n_jobs=-1)(delayed(create_aligned_pcd)(plot) for plot in plots)
@@ -506,8 +506,8 @@ t2 = time.time()
 print(f'Time to pre-process: \n===> {t2 - t1}')
 
 ################################################## MAIN LOOP ########################################################
-
-for column in columns:
+columns = ['05','06']  #temporary definition of columns, this should be removed in the future.
+for column in columns:   #columns is not defined
     # Resetting variables
     accumulated_transformation = identity
     prev_pcds = pcds
@@ -519,12 +519,12 @@ for column in columns:
             t1 = time.time()
 
             # First, checks if plot was loaded properly
-            if plot in broken_plots:
+            if plot in broken_plots:   #where is broken_plots defined?
                 print(f'{plot} was given as broken')
                 continue
 
             # Loads plot into pcds
-            pcds[plot] = o3d.io.read_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'))
+            pcds[plot] = o3d.io.read_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'))  #PCDS arent defined and its is unclear where do they come from
 
             # Checks if this is the first plot to be loaded. In the future this should be removed.
             if len(checked_plots) == 0:
@@ -553,7 +553,7 @@ for column in columns:
                 continue
 
             # Transforms point cloud
-            pcds[plot].transform(accumulated_transformation)
+            pcds[plot].transform(accumulated_transformation)  ###where is the accumulated_transformation coming from? 
 
             # Calculates overlap and stores point cloud
             overlap = new_calculate_overlap(plot, prev_plot, left_plot, identity, alignment_type)
