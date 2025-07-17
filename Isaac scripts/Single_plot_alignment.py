@@ -45,15 +45,15 @@ plot_transformations = {}
 for plot in plots:
     plot_transformations[plot] = identity
 acc_tfs = {}
-
+plot = plots[0]
 # These dictionaries will hold the point clouds I am aligning, so that they are easily accessible
 pcds = {}
 prev_pcds = {}
 
 # plots will be added to these lists after alignment. If alignment was successful, they will be added to checked.
 # If alignment was unsuccessful, they will be added to broken. If there were no plots to align them to, they will be added to hanging.
-broken_plots = ['1900']
-checked_plots = ['1901']
+broken_plots = []
+checked_plots = []
 hanging_plots = []
 
 #Parameters for icp
@@ -132,6 +132,34 @@ def mem_eff_loading(file_path):
     points[:, 2] = cloud.z
     return points
 
+
+def compute_transformation(source, target):
+    source_mean = np.mean(source, axis=0)
+    target_mean = np.mean(target, axis=0)
+
+    source_centered = source - source_mean
+    target_centered = target - target_mean
+
+    # Compute optimal rotation using SVD
+    U, _, Vt = np.linalg.svd(target_centered.T @ source_centered)
+    R = U @ Vt  # Rotation matrix
+
+    # Ensure a proper rotation (det(R) = 1)
+    if np.linalg.det(R) < 0:
+        U[:, -1] *= -1
+        R = U @ Vt
+
+    # Compute translation
+    t = target_mean - R @ source_mean
+
+    # Create transformation matrix
+    transformation = np.eye(4)
+    transformation[:3, :3] = R
+    transformation[:3, 3] = t
+
+    return t, R, transformation
+
+
 # These two functions, sort_ref and get_ref, ensure that the reference points are in the right order.
 # I added them because I found a plot that had six reference positions, and I figured it could help.
 def sort_ref(ref):
@@ -157,48 +185,67 @@ def sort_ref(ref):
         elif ref[index_list[0]][0] > ref[index_list[1]][0]:
             ref_final[1] = ref[index_list[0]]
             ref_final[2] = ref[index_list[1]]
+
     return ref_final
 
 
-def get_ref(plot, path):
-    ref = np.loadtxt(path, skiprows=1)[:, :3][:-1]
-    if len(ref) == 4:
-        return sort_ref(list(ref))
-    elif len(ref) < 4:  # Open the trajectory, get bounds, and return the bounds.
-        print(f'{plot} is missing a reference point')
-        path = path[:-7] + '_time.ply'
-        traj = o3d.io.read_point_cloud(path)
-        b_box = traj.get_minimal_oriented_bounding_box()
-        E = np.asarray(b_box.extent.copy())
-        C = np.asarray(b_box.center.copy())
-        R = np.asarray(b_box.R.copy())
-        ref = np.array([
-            [E[0] / -2, E[1] / -2, E[2] / -2],
-            [E[0] / -2, E[1] / 2, E[2] / -2],
-            [E[0] / 2, E[1] / -2, E[2] / -2],
-            [E[0] / 2, E[1] / 2, E[2] / -2]
-        ])
-        ref = np.dot(ref, R)
-        ref += C
-        return sort_ref(ref)
+def get_tf_from_ref(plot, ref):
+    if len(ref) > 5:
+        print(f'{plot} REF has an extra reference point')
+    best_combo = np.empty(4)
+    best_score = 10000
+    for combo in combinations(ref, 4):
+        dists = [
+            np.linalg.norm(combo[0] - combo[1]), np.linalg.norm(combo[0] - combo[2]),
+            np.linalg.norm(combo[0] - combo[3]), np.linalg.norm(combo[1] - combo[2]),
+            np.linalg.norm(combo[1] - combo[3]), np.linalg.norm(combo[2] - combo[3])
+        ]
+        dists.sort()
+        score = float(np.linalg.norm(dists[0] - 20)) + float(np.linalg.norm(dists[1] - 20)) + float(
+            np.linalg.norm(dists[2] - 20)) + float(np.linalg.norm(dists[3] - 20)) + float(
+            np.linalg.norm(dists[4] - (20 * np.sqrt(2)))) + float(np.linalg.norm(dists[5] - 20 * (20 * np.sqrt(2))))
+        if score < best_score:
+            best_combo, best_score = sort_ref(list(combo)), score
+    ref = sort_ref(best_combo)
+    t, R, plot_transformations[plot] = compute_transformation(ref, target_positions[plot])
+    return t, R
 
-    elif len(ref) > 4:
-        print(f'{plot} has an extra reference point')
-        best_combo = np.empty(4)
-        best_score = 10000
-        for combo in combinations(ref, 4):
-            dists = [
-                np.linalg.norm(combo[0] - combo[1]), np.linalg.norm(combo[0] - combo[2]),
-                np.linalg.norm(combo[0] - combo[3]), np.linalg.norm(combo[1] - combo[2]),
-                np.linalg.norm(combo[1] - combo[3]), np.linalg.norm(combo[2] - combo[3])
-            ]
-            dists.sort()
-            score = float(np.linalg.norm(dists[0] - 20)) + float(np.linalg.norm(dists[1] - 20)) + float(
-                np.linalg.norm(dists[2] - 20)) + float(np.linalg.norm(dists[3] - 20)) + float(
-                np.linalg.norm(dists[4] - (20 * np.sqrt(2)))) + float(np.linalg.norm(dists[5] - 20 * (20 * np.sqrt(2))))
-            if score < best_score:
-                best_combo, best_score = sort_ref(list(combo)), score
-        return sort_ref(best_combo)
+
+def get_tf_from_traj(plot, traj):
+    b_box = traj.get_minimal_oriented_bounding_box()
+    E = np.asarray(b_box.extent.copy())
+    C = np.asarray(b_box.center.copy())
+    R = np.asarray(b_box.R.copy())
+    ref = np.array([
+        [E[0] / -2, E[1] / -2, E[2] / -2],
+        [E[0] / -2, E[1] / 2, E[2] / -2],
+        [E[0] / 2, E[1] / -2, E[2] / -2],
+        [E[0] / 2, E[1] / 2, E[2] / -2]
+    ])
+    ref = np.dot(ref, R)
+    ref += C
+    ref = sort_ref(ref)
+    t, R, plot_transformations[plot] = compute_transformation(ref, target_positions[plot])
+    return t, R
+
+
+def get_crop_from_ref(plot, ref):
+    box_min = [target_positions[plot][0][0] - 2.5, target_positions[plot][0][1] - 2.5, min_elev]
+    box_max = [target_positions[plot][3][0] + 2.5, target_positions[plot][3][1] + 2.5, max_elev]
+    return box_min, box_max
+
+
+def get_crop_from_traj(plot, traj):
+    box_min = traj.get_min_bound()
+    box_max = traj.get_max_bound()
+    box_min[0] -= 2.5
+    box_min[1] -= 2.5
+    box_min[2] = min_elev
+    box_max[0] += 2.5
+    box_max[1] += 2.5
+    box_max[2] = max_elev
+    return box_min, box_max
+
 
 # This code shortens the point clouds. I have had some issues with this, in some files it removes nearly every point.
 # I believe the issue is with the outlier removal part. The print statements are temporary, for troubleshooting.
@@ -257,105 +304,123 @@ def shorten(points, resolution, height):
     return points[keep_mask]
 
 
-def compute_transformation(source, target):
-    source_mean = np.mean(source, axis=0)
-    target_mean = np.mean(target, axis=0)
-
-    source_centered = source - source_mean
-    target_centered = target - target_mean
-
-    # Compute optimal rotation using SVD
-    U, _, Vt = np.linalg.svd(target_centered.T @ source_centered)
-    R = U @ Vt  # Rotation matrix
-
-    # Ensure a proper rotation (det(R) = 1)
-    if np.linalg.det(R) < 0:
-        U[:, -1] *= -1
-        R = U @ Vt
-
-    # Compute translation
-    t = target_mean - R @ source_mean
-
-    # Create transformation matrix
-    transformation = np.eye(4)
-    transformation[:3, :3] = R
-    transformation[:3, 3] = t
-
-    return t, R, transformation
-
-
 def create_aligned_pcd(plot):
     # Getting pcd and ref paths. The conditionals are because the naming conventions on some files in the ForestLandscapes folder vary.
     try:
         folder = get_file_path(plot)
-        if os.path.isfile(os.path.join(path, folder, 'results_trajref.txt')):
-            ref_path = os.path.join(path, folder, 'results_trajref.txt')
-        else:
-            ref_path = ''
-            print(f'{plot} REF FILE NOT FOUND')
-        if os.path.isfile(os.path.join(path, folder, 'results.laz')):
-            pcd_path = os.path.join(path, folder, 'results.laz')
-        else:
-            pcd_path = ''
-            print(f'{plot} PCD FILE NOT FOUND')
-        if os.path.isfile(os.path.join(path, folder, 'results_traj_time.ply')):
-            traj_path = os.path.join(path, folder, 'results_traj_time.ply')
-        else:
-            traj_path = ''
-            print(f'{plot} TRAJ FILE NOT FOUND')
+        ref_path = os.path.join(path, folder, 'results_trajref.txt')
+        traj_path = os.path.join(path, folder, 'results_traj_time.ply')
+        pcd_path = os.path.join(path, folder, 'results.laz')
 
         # Checking if file has been pre-processed
         if os.path.exists(os.path.join(temp_path, f'{plot}TEMP.ply')):
-            ref = get_ref(plot, ref_path)
-            _, _, transformation = compute_transformation(ref, target_positions[plot])
-            plot_transformations[plot] = transformation
-            return {plot: True}
+            if os.path.exists(ref_path):
+                ref = np.loadtxt(ref_path, skiprows=1)[:, :3]
 
-        # Checking if pcd and ref exist
-        if os.path.isfile(pcd_path) and os.path.isfile(ref_path) and os.path.isfile(traj_path):
-            # Loading ref, making sure it is in the proper order
-            ref = get_ref(plot, ref_path)
+                if len(ref) >= 4:
+                    _, _ = get_tf_from_ref(plot, ref)
+                    return {plot: True}
 
-            # Computing and storing transformation
-            t, R, transformation = compute_transformation(ref, target_positions[plot])
-            plot_transformations[plot] = transformation
+                elif os.path.exists(traj_path):
+                    traj = o3d.io.read_point_cloud(traj_path)
+                    b_box = traj.get_minimal_oriented_bounding_box()
+                    E = np.asarray(b_box.extent.copy())
+                    E = [max(E), np.median(E), min(E)]
 
-            # Loading points, applying transformation
-            points = mem_eff_loading(pcd_path)
-            points = np.dot(points, R.T)
-            points += t
+                    if 20 < E[0] < 30 and 20 < E[1] < 30:
+                        _, _ = get_tf_from_traj(plot, traj)
+                        return {plot: True}
 
-            # Loading traj, Calculating bounding box and cropping point cloud
-            traj = o3d.io.read_point_cloud(traj_path)
-            traj.transform(transformation)
-            box_min = traj.get_min_bound()
-            box_max = traj.get_max_bound()
-            if 17.5 > box_max[0] - box_min[0] > 25 or 17.5 > box_max[1] - box_min[1] > 25: # Checks dimensions of bounding box
-                print(f'{plot} trajectory is broken')
-                box_min = [target_positions[plot][0][0] - 2.5, target_positions[plot][0][1] - 2.5, min_elev]
-                box_max = [target_positions[plot][3][0] + 2.5, target_positions[plot][3][1] + 2.5, max_elev]
-            else:
-                box_min[0] -= 2.5
-                box_min[1] -= 2.5
-                box_max[0] += 2.5
-                box_max[1] += 2.5
-            mask = np.all((points >= box_min) & (points <= box_max), axis=1)
-            points = points[mask]
+            elif os.path.exists(traj_path):
+                traj = o3d.io.read_point_cloud(traj_path)
+                b_box = traj.get_minimal_oriented_bounding_box()
+                E = np.asarray(b_box.extent.copy())
+                E = [max(E), np.median(E), min(E)]
 
-            # Shortening point cloud
-            points = shorten(points, 0.5, 2)
+                if 20 < E[0] < 30 and 20 < E[1] < 30:
+                    _, _ = get_tf_from_traj(plot, traj)
+                    return {plot: True}
 
-            # Store as pcd
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(points)
-            o3d.io.write_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'), pcd)
-
-            print(plot, 'done')
-
-            return {plot: True}
-        else:
-            print(f'{plot} not found')
+        if not os.path.exists(pcd_path):
+            print(f'{plot} PCD not found')
             return {plot: False}
+
+        if os.path.exists(ref_path) and os.path.exists(traj_path):
+            ref = np.loadtxt(ref_path, skiprows=1)[:, :3]
+            traj = o3d.io.read_point_cloud(traj_path)
+            b_box = traj.get_minimal_oriented_bounding_box()
+            E = np.asarray(b_box.extent.copy())
+            E = [max(E), np.median(E), min(E)]
+
+            if len(ref) >= 4 and 20 < E[0] < 30 and 20 < E[1] < 30:
+                t, R = get_tf_from_ref(plot, ref)
+                box_min, box_max = get_crop_from_traj(plot, traj.transform(plot_transformations[plot]))
+
+            elif len(ref) >= 4 and (30 < E[0] or 20 > E[0] or 30 < E[1] or 20 > E[1]):
+                print(f'{plot} TRAJ is broken')
+                print(E)
+                t, R = get_tf_from_ref(plot, ref)
+                box_min, box_max = get_crop_from_ref(plot, ref)
+
+            elif len(ref) < 4 and 20 < E[0] < 30 and 20 < E[1] < 30:
+                print(f'{plot} REF is missing a reference point')
+                t, R = get_tf_from_traj(plot, traj)
+                box_min, box_max = get_crop_from_traj(plot, traj.transform(plot_transformations[plot]))
+
+            else:
+                print(f'{plot} REF and TRAJ broken')
+                return {plot: False}
+
+        elif os.path.exists(ref_path) and not os.path.exists(traj_path):
+            print(f'{plot} TRAJ not found')
+            ref = np.loadtxt(ref_path, skiprows=1)[:, :3]
+
+            if len(ref) >= 4:
+                t, R = get_tf_from_ref(plot, ref)
+                box_min, box_max = get_crop_from_ref(plot, ref)
+            else:
+                print(f'{plot} REF is missing a reference point')
+                return {plot: False}
+
+        elif not os.path.exists(ref_path) and os.path.exists(traj_path):
+            print(f'{plot} REF not found')
+            traj = o3d.io.read_point_cloud(traj_path)
+            b_box = traj.get_minimal_oriented_bounding_box()
+            E = np.asarray(b_box.extent.copy())
+            E = [max(E), np.median(E), min(E)]
+
+            if 20 < E[0] < 30 and 20 < E[1] < 30:
+                t, R = get_tf_from_traj(plot, traj)
+                box_min, box_max = get_crop_from_traj(plot, traj.transform(plot_transformations[plot]))
+            else:
+                print(f'{plot} traj is broken')
+                return {plot: False}
+
+        else:
+            print(f'{plot} REF and TRAJ not found')
+            return {plot: False}
+
+        print(f'{plot} ref and crop loaded')
+        # Loading points, applying transformation
+        points = mem_eff_loading(pcd_path)
+        points = np.dot(points, R.T)
+        points += t
+
+        mask = np.all((points >= box_min) & (points <= box_max), axis=1)
+        points = points[mask]
+
+        # Shortening point cloud
+        points = shorten(points, 0.5, 2)
+
+        # Store as pcd
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        o3d.io.write_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'), pcd)
+
+        print(plot, 'done')
+
+        return {plot: True}
+
     except Exception as e:
         print(f"An error occurred loading {plot}")
         print(f'Error type: {type(e).__name__}')
@@ -402,10 +467,10 @@ def new_calculate_overlap(plot, vert_plot, hori_plot, transformation, typ):
         reference = o3d.geometry.PointCloud()
         target = o3d.geometry.PointCloud()
 
-        ref_temp, tar_temp = calculate_overlap(temp, pcds[plot])
+        ref_temp, tar_temp = calculate_overlap(temp, pcds[vert_plot])
         reference += ref_temp
         target += tar_temp
-        ref_temp, tar_temp = calculate_overlap(temp, prev_pcds[vert_plot])
+        ref_temp, tar_temp = calculate_overlap(temp, prev_pcds[hori_plot])
         reference += ref_temp
         target += tar_temp
 
@@ -494,6 +559,7 @@ def writer(plot):
 
 ############################################### PRE-PROCESSING #####################################################
 ### I insist proesecutes analysis is not heavy, time parallelization is not necessary. only slow because the time it takes to load and write temp clouds.
+# The proscutes analysis isn't the heavy part, it's the DSM calculation and cropping the point cloud based off that.
 t1 = time.time()
 # Parallelized pre-processing. I have found this to be significantly faster, although the code still has some issues with the shorten function
 pre_process = Parallel(n_jobs=-1)(delayed(create_aligned_pcd)(plot) for plot in plots)
@@ -509,7 +575,8 @@ t2 = time.time()
 print(f'Time to pre-process: \n===> {t2 - t1}')
 
 ################################################## MAIN LOOP ########################################################
-columns = ['05','06']  #temporary definition of columns, this should be removed in the future.
+#columns = ['05','06']  #temporary definition of columns, this should be removed in the future.
+# columns is a dictionary of the form {'Column_number': ['plot_number', 'plot_number', ...], ...}
 for column in columns:   #columns is not defined
     # Resetting variables
     accumulated_transformation = identity
