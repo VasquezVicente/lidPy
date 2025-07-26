@@ -9,6 +9,8 @@ import copy
 import time
 import os
 
+# SUGGESTION: Try using 3dfin / forest structural complexities tool to verify alignment.
+
 #################################### Defining variables ############################################
 
 path = r'\\Stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_data_processed'
@@ -42,8 +44,6 @@ for col in range(c):
 
 # This variable will be used to store transformations from both the global and precise alignment.
 plot_transformations = {}
-for plot in plots:
-    plot_transformations[plot] = identity
 acc_tfs = {}
 plot = plots[0]
 # These dictionaries will hold the point clouds I am aligning, so that they are easily accessible
@@ -207,8 +207,7 @@ def get_tf_from_ref(plot, ref):
         if score < best_score:
             best_combo, best_score = sort_ref(list(combo)), score
     ref = sort_ref(best_combo)
-    t, R, plot_transformations[plot] = compute_transformation(ref, target_positions[plot])
-    return t, R
+    return compute_transformation(ref, target_positions[plot])
 
 
 def get_tf_from_traj(plot, traj):
@@ -225,8 +224,7 @@ def get_tf_from_traj(plot, traj):
     ref = np.dot(ref, R)
     ref += C
     ref = sort_ref(ref)
-    t, R, plot_transformations[plot] = compute_transformation(ref, target_positions[plot])
-    return t, R
+    return compute_transformation(ref, target_positions[plot])
 
 
 def get_crop_from_ref(plot, ref):
@@ -318,8 +316,8 @@ def create_aligned_pcd(plot):
                 ref = np.loadtxt(ref_path, skiprows=1)[:, :3]
 
                 if len(ref) >= 4:
-                    _, _ = get_tf_from_ref(plot, ref)
-                    return {plot: True}
+                    _, _, transformation = get_tf_from_ref(plot, ref)
+                    return {plot: [True, transformation]}
 
                 elif os.path.exists(traj_path):
                     traj = o3d.io.read_point_cloud(traj_path)
@@ -328,8 +326,8 @@ def create_aligned_pcd(plot):
                     E = [max(E), np.median(E), min(E)]
 
                     if 20 < E[0] < 30 and 20 < E[1] < 30:
-                        _, _ = get_tf_from_traj(plot, traj)
-                        return {plot: True}
+                        _, _, transformation = get_tf_from_traj(plot, traj)
+                        return {plot: [True, transformation]}
 
             elif os.path.exists(traj_path):
                 traj = o3d.io.read_point_cloud(traj_path)
@@ -338,12 +336,12 @@ def create_aligned_pcd(plot):
                 E = [max(E), np.median(E), min(E)]
 
                 if 20 < E[0] < 30 and 20 < E[1] < 30:
-                    _, _ = get_tf_from_traj(plot, traj)
-                    return {plot: True}
+                    _, _, transformation = get_tf_from_traj(plot, traj)
+                    return {plot: [True, transformation]}
 
         if not os.path.exists(pcd_path):
             print(f'{plot} PCD not found')
-            return {plot: False}
+            return {plot: [False, identity]}
 
         if os.path.exists(ref_path) and os.path.exists(traj_path):
             ref = np.loadtxt(ref_path, skiprows=1)[:, :3]
@@ -353,34 +351,34 @@ def create_aligned_pcd(plot):
             E = [max(E), np.median(E), min(E)]
 
             if len(ref) >= 4 and 20 < E[0] < 30 and 20 < E[1] < 30:
-                t, R = get_tf_from_ref(plot, ref)
-                box_min, box_max = get_crop_from_traj(plot, traj.transform(plot_transformations[plot]))
+                t, R, transformation = get_tf_from_ref(plot, ref)
+                box_min, box_max = get_crop_from_traj(plot, traj.transform(transformation))
 
             elif len(ref) >= 4 and (30 < E[0] or 20 > E[0] or 30 < E[1] or 20 > E[1]):
                 print(f'{plot} TRAJ is broken')
                 print(E)
-                t, R = get_tf_from_ref(plot, ref)
+                t, R, transformation = get_tf_from_ref(plot, ref)
                 box_min, box_max = get_crop_from_ref(plot, ref)
 
             elif len(ref) < 4 and 20 < E[0] < 30 and 20 < E[1] < 30:
                 print(f'{plot} REF is missing a reference point')
-                t, R = get_tf_from_traj(plot, traj)
-                box_min, box_max = get_crop_from_traj(plot, traj.transform(plot_transformations[plot]))
+                t, R, transformation = get_tf_from_traj(plot, traj)
+                box_min, box_max = get_crop_from_traj(plot, traj.transform(transformation))
 
             else:
                 print(f'{plot} REF and TRAJ broken')
-                return {plot: False}
+                return {plot: [False, identity]}
 
         elif os.path.exists(ref_path) and not os.path.exists(traj_path):
             print(f'{plot} TRAJ not found')
             ref = np.loadtxt(ref_path, skiprows=1)[:, :3]
 
             if len(ref) >= 4:
-                t, R = get_tf_from_ref(plot, ref)
+                t, R, transformation = get_tf_from_ref(plot, ref)
                 box_min, box_max = get_crop_from_ref(plot, ref)
             else:
                 print(f'{plot} REF is missing a reference point')
-                return {plot: False}
+                return {plot: [False, identity]}
 
         elif not os.path.exists(ref_path) and os.path.exists(traj_path):
             print(f'{plot} REF not found')
@@ -390,15 +388,15 @@ def create_aligned_pcd(plot):
             E = [max(E), np.median(E), min(E)]
 
             if 20 < E[0] < 30 and 20 < E[1] < 30:
-                t, R = get_tf_from_traj(plot, traj)
-                box_min, box_max = get_crop_from_traj(plot, traj.transform(plot_transformations[plot]))
+                t, R, transformation = get_tf_from_traj(plot, traj)
+                box_min, box_max = get_crop_from_traj(plot, traj.transform(transformation))
             else:
                 print(f'{plot} traj is broken')
-                return {plot: False}
+                return {plot: [False, identity]}
 
         else:
             print(f'{plot} REF and TRAJ not found')
-            return {plot: False}
+            return {plot: [False, identity]}
 
         print(f'{plot} ref and crop loaded')
         # Loading points, applying transformation
@@ -419,13 +417,13 @@ def create_aligned_pcd(plot):
 
         print(plot, 'done')
 
-        return {plot: True}
+        return {plot: [True, transformation]}
 
     except Exception as e:
         print(f"An error occurred loading {plot}")
         print(f'Error type: {type(e).__name__}')
         print(f'Error message: {e}')
-        return {plot: False}
+        return {plot: [False, identity]}
 
 
 # Checks which of the neighboring plots have been checked and can be aligned to.
@@ -518,44 +516,6 @@ def icp(reference_cloud, target_cloud, threshold, transformation, radius, max_nn
             print('fitness did not improve. final fitness is', initial_fitness_match)
     return output
 
-# This function is unnecessary, I haven't really gotten around to modifying it yet.
-def writer(plot):
-    try:
-        # Reading the point cloud
-        folder = get_file_path(plot)
-        points = mem_eff_loading(os.path.join(path, folder, 'results.laz'))
-
-        # Decomposing the transformation
-        T = plot_transformations[plot]
-        t = T[:3, 3]
-        R = T[:3, :3]
-
-        # Applying the transformation
-        points = np.dot(points, R.T)
-        points += t
-
-        new_hdr = laspy.LasHeader(version="1.4", point_format=6)
-        new_cloud = laspy.LasData(new_hdr)
-        new_cloud.x = points[:, 0]
-        new_cloud.y = points[:, 1]
-        new_cloud.z = points[:, 2]
-        del points
-
-        save_path = os.path.join(r'D:\MLS_alignment', plot)
-        if not plot in broken_plots:
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
-            new_cloud.write(os.path.join(save_path, 'processed.laz'))
-            print(f'{plot} written successfully')
-        else:
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
-            new_cloud.write(os.path.join(save_path, 'BAD_processed.laz'))
-            print(f'{plot} written successfully')
-    except Exception as e:
-        print(f'An error ocurred saving {plot}')
-        print(f'Error type: {type(e).__name__}')
-        print(f'Error message: {e}')
 
 ############################################### PRE-PROCESSING #####################################################
 ### I insist proesecutes analysis is not heavy, time parallelization is not necessary. only slow because the time it takes to load and write temp clouds.
@@ -568,9 +528,12 @@ pre_process = Parallel(n_jobs=-1)(delayed(create_aligned_pcd)(plot) for plot in 
 # This loops through that output and determines which point clouds were not able to be loaded.
 for item in pre_process:
     key = list(item.keys())[0]
-    if not item[key]:
+    print(key)
+    if not item[key][0]:
         print(key, 'failed')
         broken_plots.append(key)
+    else:
+        plot_transformations[key] = item[key][1]
 t2 = time.time()
 print(f'Time to pre-process: \n===> {t2 - t1}')
 
@@ -734,7 +697,37 @@ for key in fitness_scores:
 
 # Stores point clouds
 for plot in plots:
-    writer(plot)
+    try:
+        # Reading the point cloud
+        folder = get_file_path(plot)
+        pcd = lazO3d(os.path.join(path, folder, 'results.laz'))
+        pcd.transform(plot_transformations[plot])
+
+        points = np.asarray(pcd.points)
+        del pcd
+
+        new_hdr = laspy.LasHeader(version="1.4", point_format=6)
+        new_cloud = laspy.LasData(new_hdr)
+        new_cloud.x = points[:, 0]
+        new_cloud.y = points[:, 1]
+        new_cloud.z = points[:, 2]
+        del points
+
+        save_path = os.path.join(r'D:\MLS_alignment', plot)
+        if plot in checked_plots:
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+            new_cloud.write(os.path.join(save_path, 'processed.laz'))
+            print(f'{plot} written successfully')
+        else:
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+            new_cloud.write(os.path.join(save_path, 'BAD_processed.laz'))
+            print(f'{plot} written successfully')
+    except Exception as e:
+        print(f'An error ocurred saving {plot}')
+        print(f'Error type: {type(e).__name__}')
+        print(f'Error message: {e}')
 
 # Removes temporary plots. Not running for efficiency purposes.
-#shutil.rmtree(r'D:\MLS_alignment\temporary')
+shutil.rmtree(r'D:\MLS_alignment\temporary')
