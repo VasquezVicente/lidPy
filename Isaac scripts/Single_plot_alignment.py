@@ -538,7 +538,6 @@ t2 = time.time()
 print(f'Time to pre-process: \n===> {t2 - t1}')
 
 ################################################## MAIN LOOP ########################################################
-#columns = ['05','06']  #temporary definition of columns, this should be removed in the future.
 # columns is a dictionary of the form {'Column_number': ['plot_number', 'plot_number', ...], ...}
 for column in columns:   #columns is not defined
     # Resetting variables
@@ -552,12 +551,13 @@ for column in columns:   #columns is not defined
             t1 = time.time()
 
             # First, checks if plot was loaded properly
-            if plot in broken_plots:   #where is broken_plots defined?
+            if plot in broken_plots:   #where is broken_plots defined? A: Broken_plots is defined as an empty list, and added to as broken plots are found.
                 print(f'{plot} was given as broken')
                 continue
 
             # Loads plot into pcds
             pcds[plot] = o3d.io.read_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'))  #PCDS arent defined and its is unclear where do they come from
+            #A: This is the only segment where I load pcds in this loop. I am loading the cropped files I created earlier.
 
             # Checks if this is the first plot to be loaded. In the future this should be removed.
             if len(checked_plots) == 0:
@@ -586,7 +586,9 @@ for column in columns:   #columns is not defined
                 continue
 
             # Transforms point cloud
-            pcds[plot].transform(accumulated_transformation)  ###where is the accumulated_transformation coming from? 
+            pcds[plot].transform(accumulated_transformation)  ###where is the accumulated_transformation coming from?
+            #A: The accumulated transformation is, as the name implies, an accumulation of all the previous transformations in that column/row.
+            # I do this so that I can maintain the same relative positions between the plots I am aligning; otherwise the target plot would be in an un-ideal position relative to the reference.
 
             # Calculates overlap and stores point cloud
             overlap = new_calculate_overlap(plot, prev_plot, left_plot, identity, alignment_type)
@@ -596,7 +598,6 @@ for column in columns:   #columns is not defined
             overlap = new_calculate_overlap(plot, prev_plot, left_plot, precise_transformation, alignment_type)
             fitness_scores[plot] = o3d.pipelines.registration.evaluate_registration(overlap[0], overlap[1],
                                                                                     threshold, identity)
-            print(fitness_scores[plot])
 
             # Checks fitness scores to verify if plot is broken or not
             if fitness_scores[plot].fitness < 0.9:
@@ -652,11 +653,11 @@ while len(hanging_plots) > 0 and not isolated:
                 # Loads pcd and neighbors, transforms by the stored accumulated transformations, calculates overlap.
                 pcds = {}
                 pcd = o3d.io.read_point_cloud(os.path.join(temp_path, f'{plot}TEMP.ply'))
-                pcd.transform(acc_tfs[plot])
+                pcd.transform(acc_tfs[checked_neighbors[0]])
                 overlap = [o3d.geometry.PointCloud(), o3d.geometry.PointCloud()]
                 for n in checked_neighbors:
                     pcds[n] = o3d.io.read_point_cloud(os.path.join(temp_path, f'{n}TEMP.ply'))
-                    pcds[n].transform(acc_tfs[plot])
+                    pcds[n].transform(acc_tfs[n])
                     ref_overlap, tar_overlap = calculate_overlap(pcd, pcds[n])
                     overlap[0] += ref_overlap
                     overlap[1] += tar_overlap
@@ -684,45 +685,53 @@ while len(hanging_plots) > 0 and not isolated:
                 # Stores transformation if plot is good, resets isolated to False so that loop continues.
                 checked_plots.append(plot)
                 hanging_plots.remove(plot)
-                plot_transformations[plot] = precise_transformation @ acc_tfs[plot] @ plot_transformations[plot]
+                acc_tfs[plot] = precise_transformation @ acc_tfs[checked_neighbors[0]]
+                plot_transformations[plot] = acc_tfs[plot] @ plot_transformations[plot]
                 isolated = False
             except Exception as e:
                 print(f"An error occurred reviewing {plot}")
                 print(f'Error type: {type(e).__name__}')
                 print(f'Error message: {e}')
 
-# Displays fitness values
-for key in fitness_scores:
-    print(key + ':', fitness_scores[key].fitness)
+try:
+    # Displays fitness values
+    new_fitness_scores = []
+    for key in fitness_scores:
+        print(key + ':', fitness_scores[key].fitness)
+        new_fitness_scores.append(key + ': ' + str(fitness_scores[key].fitness))
+
+    results_file = open(os.path.join('D:\MLS_alignment', 'fitness_scores.txt'), 'w')
+    results_file.writelines(new_fitness_scores)
+    results_file.close()
+except Exception as e:
+    print(f"An error occurred storing fitness scores")
+    print(f'Error type: {type(e).__name__}')
+    print(f'Error message: {e}')
 
 # Stores point clouds
 for plot in plots:
     try:
         # Reading the point cloud
         folder = get_file_path(plot)
+        traj = o3d.io.read_point_cloud(os.path.join(path, folder, 'results_traj_time.ply'))
+        traj.transform(plot_transformations[plot])
         pcd = lazO3d(os.path.join(path, folder, 'results.laz'))
         pcd.transform(plot_transformations[plot])
 
-        points = np.asarray(pcd.points)
-        del pcd
-
-        new_hdr = laspy.LasHeader(version="1.4", point_format=6)
-        new_cloud = laspy.LasData(new_hdr)
-        new_cloud.x = points[:, 0]
-        new_cloud.y = points[:, 1]
-        new_cloud.z = points[:, 2]
-        del points
-
-        save_path = os.path.join(r'D:\MLS_alignment', plot)
+        save_path = os.path.join(r'\\Stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_aligned', plot)
         if plot in checked_plots:
+            save_path = os.path.join(r'\\Stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_aligned', plot)
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
-            new_cloud.write(os.path.join(save_path, 'processed.laz'))
+            o3d.io.write_point_cloud(os.path.join(save_path, 'results_traj_time_aligned.ply'), traj)
+            o3d.io.write_point_cloud(os.path.join(save_path, 'results_aligned.ply'), pcd)
             print(f'{plot} written successfully')
         else:
+            save_path = os.path.join(r'\\Stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_aligned', plot + '_BAD')
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
-            new_cloud.write(os.path.join(save_path, 'BAD_processed.laz'))
+            o3d.io.write_point_cloud(os.path.join(save_path, 'results_traj_time_aligned.ply'), traj)
+            o3d.io.write_point_cloud(os.path.join(save_path, 'results_aligned.ply'), pcd)
             print(f'{plot} written successfully')
     except Exception as e:
         print(f'An error ocurred saving {plot}')
