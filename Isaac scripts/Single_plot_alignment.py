@@ -560,7 +560,7 @@ for column in columns:   #columns is not defined
             #A: This is the only segment where I load pcds in this loop. I am loading the cropped files I created earlier.
 
             # Checks if this is the first plot to be loaded. In the future this should be removed.
-            if len(checked_plots) == 0:
+            if len(checked_plots) == 0:  ## if the length of the tuple checked plots is 0, then it means that no plots have been aligned yet.
                 checked_plots.append(plot)
                 acc_tfs[plot] = accumulated_transformation
                 continue

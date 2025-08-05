@@ -1,8 +1,8 @@
 import os
-from joblib import Parallel, delayed
-from itertools import combinations
 import open3d as o3d
+import matplotlib.pyplot as plt 
 import pandas as pd
+import geopandas as gpd
 import numpy as np
 import shutil
 import laspy
@@ -10,7 +10,6 @@ import copy
 import time
 import os
 import json
-
 from scipy.spatial import ConvexHull
 from shapely.geometry import Polygon
 
@@ -26,7 +25,6 @@ def get_file_path(plot_num, path=r'\\stri-sm01\ForestLandscapes\LandscapeProduct
     if not check:
         print(plot_num, 'FILE NOT FOUND')
     return folder   ###this function need a test
-
 
 def draw_registration_result(source, target, transformation):
     source_temp = copy.deepcopy(source)
@@ -125,7 +123,6 @@ def evaluate_registration(reference_overlap, target_overlap, threshold, init_mat
         reference_overlap, target_overlap, threshold, init_matrix)
     return eval_result.fitness, eval_result
 
-
 def calculate_overlap(reference, target):
     bbr = reference.get_axis_aligned_bounding_box()
     bbt = target.get_axis_aligned_bounding_box()
@@ -138,6 +135,147 @@ def calculate_overlap(reference, target):
     crop_box = o3d.geometry.AxisAlignedBoundingBox(bbox_min, bbox_max)
 
     return crop_box
+
+
+# Getting neighboring plots. I created this function because I got errors when doing str(int(plot)), when "plot" began with a 0.
+def get_plot(plot, side):
+    if side == 'N':
+        plot = str(int(plot) + 1)
+    elif side == 'E':
+        plot = str(int(plot) + 100)
+    elif side == 'S':
+        plot = str(int(plot) - 1)
+    elif side == 'W':
+        plot = str(int(plot) - 100)
+    while len(plot) < 4: # Ensuring plot is the correct length
+        plot = '0' + plot
+    return plot
+
+
+####Evaluation of the registration between two point clouds using Open3D and Shapely for polygon operations###
+## We will check column 06 alignment###
+
+wd=r"\\stri-sm01\ForestLandscapes\LandscapeProducts\MLS\2023\BCI_50ha_aligned"
+plots = [
+    os.path.join(folder, "results_aligned.ply")
+    for folder in os.listdir(wd)
+    if os.path.isfile(os.path.join(wd, folder, "results_aligned.ply"))
+]
+
+print("Number of plots found:", len(plots))
+
+## create a df 
+df = pd.DataFrame(plots, columns=["file_path"])
+df['plot'] = df['file_path'].apply(lambda x: os.path.basename(os.path.dirname(x))[:4])
+df['quality'] = df['file_path'].apply(lambda x: "BAD" if "BAD" in os.path.basename(os.path.dirname(x)) else "GOOD")
+
+## visualization of the quality of the plots 
+shp_file=r"\\stri-sm01\ForestLandscapes\UAVSHARE\BCNM Lidar Raw Data\TLS\shp\bci_20x20.shp"
+shp = gpd.read_file(shp_file)
+shp = shp.rename(columns={"Label": "plot"})
+merged= shp.merge(df, on='plot', how='left')
+merged['fitness'] = None  ##adding a column for the fitness of the registration
+merged['x_local']= merged['X_IDX']*20
+merged['y_local']= merged['Y_IDX']*20
+
+merged.plot(column='quality', cmap='coolwarm', legend=True, figsize=(10, 10))
+plt.show()
+
+
+columns = {}
+plots = []
+r = 25
+r1 =0 
+c = 26
+c1 = 6
+for col in range(c):
+    row_list = []
+    col = str(col + c1)
+    if len(col) == 1:
+        col = '0' + col
+    for row in range(r):
+        row = str(row + r1)
+        if len(row) == 1:
+            row = '0' + row
+        plot = col + row
+        row_list.append(plot)
+        plots.append(plot)
+    columns[col] = row_list
+
+
+for col in columns:
+    for plot in columns[col]:
+
+        #plot is the plot name 
+        #plot 2 should be the next plot in the row
+        reference = merged[merged['plot'] == plot].iloc[0]  ##we are taking the first plot as reference
+        target_plot=get_plot(plot,"N")
+        print("Reference plot:", reference['plot'])
+        print("Target plot:", target_plot)
+
+## I Need a loop here
+reference= merged[merged['plot'] == '0602'].iloc[0]  ##we are taking the first plot as reference
+target= merged[merged['plot'] == '0603'].iloc[0]  ##we are taking the second plot as target
+reference= o3d.io.read_point_cloud(os.path.join(wd,reference['file_path']))
+target= o3d.io.read_point_cloud(os.path.join(wd,target['file_path']))
+
+
+x_reference = merged.loc[merged['plot'] == '0601', 'x_local'].values[0]
+y_reference = merged.loc[merged['plot'] == '0601', 'y_local'].values[0]
+x_target = merged.loc[merged['plot'] == '0602', 'x_local'].values[0]
+y_target = merged.loc[merged['plot'] == '0602', 'y_local'].values[0]
+
+
+min_bound = np.array([x_reference-10, y_reference-10, 100])
+max_bound = np.array([x_reference+30, y_reference+30, 200])
+crop_box = o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+reference_cropped = reference.crop(crop_box)  ##we are cropping the reference plot
+reference_cropped.get_axis_aligned_bounding_box()
+
+
+min_bound = np.array([x_target-10, y_target-10, 100])
+max_bound = np.array([x_target+30, y_target+30, 200])
+crop_box = o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+target_cropped = target.crop(crop_box)  ##we are cropping the reference plot
+
+
+o3d.visualization.draw_geometries([reference_cropped, target_cropped])  ##we are visualizing the two plots
+
+## Evaluate the registration between the cropped point clouds
+threshold = 0.1  ##this is the threshold for the registration evaluation
+init_matrix = np.eye(4)  ##this is the initial matrix for the registration evaluation
+def evaluate_registration(reference_overlap, target_overlap, threshold, init_matrix):
+    eval_result = o3d.pipelines.registration.evaluate_registration(
+        reference_overlap, target_overlap, threshold, init_matrix)
+    return eval_result.fitness, eval_result
+
+def calculate_fitness(reference, target, threshold, init_matrix):
+    bbox_reference = reference.get_axis_aligned_bounding_box()
+    bbox_target = target.get_axis_aligned_bounding_box()
+
+    min_bound = np.maximum(bbox_reference.min_bound, bbox_target.min_bound)
+    max_bound = np.minimum(bbox_reference.max_bound, bbox_target.max_bound)
+    crop_box = o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+
+    reference_overlap = reference.crop(crop_box)
+    target_overlap = target.crop(crop_box)
+
+    fitness, _ = evaluate_registration(reference_overlap, target_overlap, threshold, init_matrix)
+    return fitness, reference_overlap, target_overlap
+
+
+fitness, reference_overlap, target_overlap = calculate_fitness(reference_cropped, target_cropped, threshold, init_matrix)
+draw_registration_result(reference_overlap, target_overlap, np.eye(4))  ##we are visualizing the registration result
+print(f"Fitness: {fitness}")  ##we are printing the fitness of the registration
+
+
+merged.loc[merged['plot'] == '0600', 'fitness'] = 1 
+merged.loc[merged['plot'] == '0602', 'fitness'] = fitness  ##we are setting the quality of the target plot to the fitness value
+
+
+merged['fitness'] = merged['fitness'].astype(float)
+merged.plot(column='fitness', cmap='coolwarm', legend=True, figsize=(10, 10))
+plt.show()
 
 ###LOADS MAIN DICTIONARY###
 with open(os.path.join(r"//stri-sm01/ForestLandscapes/UAVSHARE/BCNM Lidar Raw Data/global_transformations.json")) as f:
