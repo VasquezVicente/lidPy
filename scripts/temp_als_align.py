@@ -42,6 +42,7 @@ def draw_registration_result(source, target, transformation):
 
 def icp(photo_cloud, lidar_cloud, threshold, identity_matrix, radius, max_nn, k):
     lidar_cloud.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
+    photo_cloud.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
 
     initial_eval_result = o3d.pipelines.registration.evaluate_registration(
         photo_cloud, lidar_cloud, threshold, identity_matrix)
@@ -69,7 +70,6 @@ def icp(photo_cloud, lidar_cloud, threshold, identity_matrix, radius, max_nn, k)
 
             # Apply the new transformation to the source point cloud
             photo_cloud.transform(reg_result.transformation)
-
             # Accumulate transformations
             accumulated_transformation = reg_result.transformation @ accumulated_transformation
 
@@ -84,10 +84,12 @@ def icp(photo_cloud, lidar_cloud, threshold, identity_matrix, radius, max_nn, k)
     return photo_cloud, lidar_cloud, reg_result, last_best_transformation
 
 def lazO3d(file_path):
+    print(f"Reading file: {file_path}")
     cloud = laspy.read(file_path)
     points = np.vstack((cloud.x, cloud.y, cloud.z)).T
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
+    print(pcd)
     return pcd
 
 path=r"\\stri-sm01\ForestLandscapes\UAVSHARE\BCNM Lidar Raw Data\MLS"
@@ -96,7 +98,9 @@ path=r"\\stri-sm01\ForestLandscapes\UAVSHARE\BCNM Lidar Raw Data\MLS"
 #to ensure aligment of sequential tiles I am going to need a coffee, I have no idea how complicated this is going to get
 #reference tile placed on 0,0
 
-def evaluate_registration(target_overlap, reference_overlap, threshold, init_matrix):
+def evaluate_registration(target_overlap, reference_overlap, threshold, init_matrix, radius, max_nn):
+    target_overlap.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
+    reference_overlap.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn))
     eval_result = o3d.pipelines.registration.evaluate_registration(
         target_overlap, reference_overlap, threshold, init_matrix)
     return eval_result.fitness, eval_result
@@ -109,7 +113,7 @@ def save_point_cloud(cloud, output_path):    #the save point cloud function lack
     las.x, las.y, las.z = points[:, 0], points[:, 1], points[:, 2]
     las.write(output_path)
 
-def calculate_fitness(target, reference, threshold, init_matrix):
+def calculate_fitness(target, reference, threshold, init_matrix, radius, max_nn):
     bbox_reference = reference.get_axis_aligned_bounding_box()
     bbox_target = target.get_axis_aligned_bounding_box()
 
@@ -120,7 +124,7 @@ def calculate_fitness(target, reference, threshold, init_matrix):
     reference_overlap = reference.crop(crop_box) #reference 
     target_overlap = target.crop(crop_box) #target
 
-    fitness, _ = evaluate_registration(target_overlap, reference_overlap, threshold, init_matrix)
+    fitness, _ = evaluate_registration(target_overlap, reference_overlap, threshold, init_matrix,radius, max_nn)
     return fitness, target_overlap, reference_overlap
 
 
@@ -132,47 +136,42 @@ plots = [
     '3420', '3421', '3422', '3423', '3424'
 ]
 
-threshold = 0.10
+threshold = 0.1
 init_matrix = np.identity(4)
-score_threshold= 0.20
-
-# Dictionary to store fitness scores
-fitness_dict = {}
-
-# Evaluate overlaps for adjacent plots
-for plot in plots:
-    print("the plot is", plot)
-    reference_path = os.path.join(path, "transformed", f"{plot}_cloud.laz")
-    reference = lazO3d(reference_path)
-    # Get the plot indices
-    plot_row = int(plot[0:2])
-    plot_col = int(plot[2:4])
-    adjacent_plots = []
-    if plot_col + 1 <= 24:
-        adjacent_plots.append(f"{plot_row}{plot_col + 1:02d}")
-    if plot_row + 1 <= 34:
-        adjacent_plots.append(f"{plot_row + 1:02d}{plot_col:02d}")
-
-    for adj_plot in adjacent_plots:
-        target_path = os.path.join(path, "transformed", f"{adj_plot}_cloud.laz")
-        target = lazO3d(target_path)
-
-        # Calculate fitness score
-        fitness, target_overlap, reference_overlap = calculate_fitness(target, reference, threshold, init_matrix)
-        fitness_dict[(plot, adj_plot)] = fitness
-        print(f"Fitness score for {plot} -> {adj_plot}: {fitness}")
+score_threshold= 0.99
 
 
-        if fitness < score_threshold:
-            _,_,_,result_matrix = icp(target_overlap, reference_overlap, threshold, init_matrix, 4, 100, 2)
-            if result_matrix is not None:
+reference_path=r"\\stri-sm01\ForestLandscapes\UAVSHARE\BCNM Lidar Raw Data\TLS\plot1\decimated\retile_0_0.las"
+reference= lazO3d(reference_path)
+target_path =r"\\stri-sm01\ForestLandscapes\UAVSHARE\BCNM Lidar Raw Data\MLS\transformed\3020_cloud.laz"
+target_path_out =r"\\stri-sm01\ForestLandscapes\UAVSHARE\BCNM Lidar Raw Data\MLS\transformed\3020_cloud.ply"
+target = lazO3d(target_path)
+
+target_down = target.voxel_down_sample(voxel_size=0.01)
+reference_down= reference.voxel_down_sample(voxel_size=0.01)
+print("reference density after donwsampling: ", reference_down)
+print("target density after donwsampling: ", target_down)
+
+
+fitness, target_overlap, reference_overlap = calculate_fitness(target_down, reference_down, threshold, init_matrix,4,100)
+print(f"Fitness score for : {fitness}")
+if fitness < score_threshold:
+        _,_,_,result_matrix = icp(target_overlap, reference_overlap, threshold, init_matrix, 4, 100, 3.7)
+        if result_matrix is not None:
                 target_transformed = target.transform(result_matrix)
-                save_point_cloud(target_transformed,target_path)
-                print(f"Aligned and saved: {adj_plot}")
-            else:
-                print("The ICP failed, no improvement")
+                _,_,zmin=reference.get_min_bound()
+                _,_,zmax=reference.get_max_bound()
+                min_bound=reference.get_min_bound()
+                max_bound=reference.get_max_bound()
+                min_bound[:2] -= 2  
+                max_bound[:2] += 2
+                min_bound[2:3]= zmin
+                max_bound[2:3]= zmax
+                cropped_cloud = target_transformed.crop(o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound))
+                o3d.io.write_point_cloud(target_path_out, cropped_cloud)
+                print(f"Aligned and saved")
         else:
+                print("The ICP failed, no improvement")
+else:
             print("Fitness is enough")
-
-
 
